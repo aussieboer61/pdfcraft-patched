@@ -223,7 +223,7 @@ jobs:
           {
             echo "PdfCraft $TAG ([official release](https://github.com/$UPSTREAM/releases/tag/$TAG)) with these patches:"
             echo
-            for p in ../patches/*.patch; do echo "- $(sed -n 's/^Subject: \(\[PATCH[^]]*\] \)\{0,1\}//p' "$p" | head -1)"; done
+            for p in ../patches/*.patch; do echo "- $(awk '/^Subject: /{s=$0; sub(/^Subject: (\[PATCH[^]]*\] )?/,"",s); on=1; next} on&&/^ /{s=s $0; next} on{print s; exit}' "$p")"; done
             echo
             echo "Unsigned builds. Windows: use the portable zip. macOS: Apple silicon, ad-hoc signed (see README)."
           } > ../notes.md
