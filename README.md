@@ -14,6 +14,7 @@ patches, builds Windows and macOS, and publishes the result here under the same 
 | 0004 | AI assistant: the section title says it uses Claude Code, not an API key |
 | 0005 | AI assistant in the browser build: asks the host page to run Claude Code (for a browser extension that provides `window.pdfcraftClaude`) |
 | 0006 | Updates: the in-app updater reads **this** repository's releases, so updating keeps the patches. No startup update check on macOS (see below) |
+| 0007 | Opening a file that is already open re-reads it: a newer version at the same path (an email attachment sent again under the same name) shows at once instead of the old tab |
 
 ## Downloads
 

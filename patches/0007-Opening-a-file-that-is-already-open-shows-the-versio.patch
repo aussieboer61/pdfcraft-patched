@@ -1,0 +1,112 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: aussieboer61 <60841910+aussieboer61@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 22:57:05 +1000
+Subject: [PATCH] Opening a file that is already open shows the version on disk
+
+A mail program saves a newer attachment of the same name to the same path and opens it
+again; PdfCraft focused the tab with the old version. Now the file is read when it is
+opened again: a different version reloads the tab in place (or, with unsaved changes,
+shows the Reload bar).
+---
+ crates/ui-egui/src/app/files.rs           |  4 ++++
+ crates/ui-egui/src/platform/file_watch.rs | 24 +++++++++++++++++++
+ crates/ui-egui/tests/it/reload.rs         | 29 +++++++++++++++++++++++
+ 3 files changed, 57 insertions(+)
+
+diff --git a/crates/ui-egui/src/app/files.rs b/crates/ui-egui/src/app/files.rs
+index 81c65a2b..8cc463bf 100644
+--- a/crates/ui-egui/src/app/files.rs
++++ b/crates/ui-egui/src/app/files.rs
+@@ -801,6 +801,8 @@ impl PdfCraftApp {
+     pub fn open_recent(&mut self, path: &str) {
+         if let Some(i) = self.tab_showing(path) {
+             self.active = Some(i);
++            #[cfg(not(target_arch = "wasm32"))]
++            self.refresh_on_reopen(i);
+         } else {
+             #[cfg(not(target_arch = "wasm32"))]
+             self.open_path(path);
+@@ -847,6 +849,8 @@ impl PdfCraftApp {
+         if let Some(i) = self.tab_showing(path) {
+             self.startup_superseded = true;
+             self.active = Some(i);
++            // Opened again: a newer file at the same path (a mail attachment saved again) shows.
++            self.refresh_on_reopen(i);
+             if let Some((layout, continuous)) = display_override
+                 && let Some(view) = self.views.get_mut(i)
+             {
+diff --git a/crates/ui-egui/src/platform/file_watch.rs b/crates/ui-egui/src/platform/file_watch.rs
+index 539b9836..50ac8729 100644
+--- a/crates/ui-egui/src/platform/file_watch.rs
++++ b/crates/ui-egui/src/platform/file_watch.rs
+@@ -470,6 +470,30 @@ impl PdfCraftApp {
+         }
+     }
+ 
++    /// The file of tab `i` is opened again (from a mail program, the file manager, a link) while
++    /// its tab is open: show what is on disk now, not the version read earlier. A mail program
++    /// saves a newer attachment of the same name to the same path, and the watcher may not have
++    /// reloaded it (a dialog was open, or it had not looked yet). Opening again is the user
++    /// asking for the file, so this runs whatever the reload preference says. Unsaved changes
++    /// are kept and the Reload bar offered instead.
++    pub(crate) fn refresh_on_reopen(&mut self, i: usize) {
++        let Some(doc) = self.views.get(i).map(|v| v.id) else { return };
++        let Some(path) = self.session.get(doc).and_then(|d| d.path.clone()) else { return };
++        let stamp = Stamp::at(&path);
++        let Ok(bytes) = std::fs::read(&path) else { return };
++        if self.session.get(doc).is_some_and(|d| d.saved_bytes().as_slice() == bytes.as_slice()) {
++            return;
++        }
++        if self.has_unsaved_work(i) {
++            if let Some(view) = self.views.get_mut(i) {
++                view.disk_changed = true;
++            }
++            return;
++        }
++        self.watch.known_as(doc, stamp);
++        self.reload_view(i, Arc::new(bytes));
++    }
++
+     /// Open `bytes` in place of tab `i`'s document, keeping the tab and the reader's place. A
+     /// version that can't be opened leaves the document as it was, and says so.
+     fn reload_view(&mut self, i: usize, bytes: Arc<Vec<u8>>) {
+diff --git a/crates/ui-egui/tests/it/reload.rs b/crates/ui-egui/tests/it/reload.rs
+index 688b10c6..ac475b85 100644
+--- a/crates/ui-egui/tests/it/reload.rs
++++ b/crates/ui-egui/tests/it/reload.rs
+@@ -253,6 +253,35 @@ fn unsaved_changes_are_kept_until_reload_is_chosen() {
+     assert!(h.query_by_label_contains("This file changed on disk").is_none());
+ }
+ 
++#[test]
++fn opening_a_file_again_shows_its_new_version_at_once() {
++    // A mail program saves a newer attachment of the same name to the same path, then opens it.
++    // With the watcher out of the way (preference off), only the second open can show it.
++    let file = TempPdf::new("reopen", &fixture(2));
++    let mut h = harness(&file.path);
++    h.state_mut().reload_changed_files = false;
++    h.run_steps(1);
++    file.rebuild(&fixture(4));
++    h.state_mut().open_path(&file.path);
++    h.run_steps(2);
++    assert_eq!((h.state().views.len(), pages(&h)), (1, 4), "the new version, in the same tab");
++    assert!(!dirty(&h));
++}
++
++#[test]
++fn opening_a_file_again_keeps_unsaved_changes_and_offers_reload() {
++    let file = TempPdf::new("reopen-dirty", &fixture(2));
++    let mut h = harness(&file.path);
++    h.state_mut().reload_changed_files = false;
++    rotate_first_page(&mut h);
++    h.run_steps(1);
++    file.rebuild(&fixture(4));
++    h.state_mut().open_path(&file.path);
++    h.run_steps(2);
++    assert_eq!((pages(&h), dirty(&h)), (2, true), "not replaced behind the user's back");
++    h.get_by_label_contains("This file changed on disk");
++}
++
+ #[test]
+ fn a_deleted_file_leaves_the_document_open() {
+     let file = TempPdf::new("deleted", &fixture(2));
