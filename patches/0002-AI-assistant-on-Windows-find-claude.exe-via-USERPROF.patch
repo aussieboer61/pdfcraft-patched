@@ -1,0 +1,60 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: aussieboer61 <60841910+aussieboer61@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 03:36:05 +1000
+Subject: [PATCH 2/6] AI assistant on Windows: find claude.exe via USERPROFILE,
+ no console window; prefer Claude Code over an API key
+
+---
+ crates/ui-egui/src/dialogs/claude_ui.rs | 17 ++++++++++++-----
+ 1 file changed, 12 insertions(+), 5 deletions(-)
+
+diff --git a/crates/ui-egui/src/dialogs/claude_ui.rs b/crates/ui-egui/src/dialogs/claude_ui.rs
+index f5110beb..a4f63fa0 100644
+--- a/crates/ui-egui/src/dialogs/claude_ui.rs
++++ b/crates/ui-egui/src/dialogs/claude_ui.rs
+@@ -32,9 +32,10 @@ enum Backend {
+     ClaudeCode(std::path::PathBuf),
+ }
+ 
+-/// An API key wins; otherwise Claude Code, when it is installed.
++/// Claude Code (the Claude plan it is logged in to) wins; an API key is only the fallback when
++/// Claude Code is not installed, so a stray `ANTHROPIC_API_KEY` never switches to metered billing.
+ fn backend() -> Option<Backend> {
+-    api_key().map(Backend::Api).or_else(|| claude_code().map(Backend::ClaudeCode))
++    claude_code().map(Backend::ClaudeCode).or_else(|| api_key().map(Backend::Api))
+ }
+ 
+ /// The `claude` command: on `PATH`, else where its installers put it (an app opened from the Dock
+@@ -47,7 +48,7 @@ fn claude_code() -> Option<std::path::PathBuf> {
+     #[cfg(not(target_arch = "wasm32"))]
+     {
+         static FOUND: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+-        FOUND.get_or_init(|| tool_dirs().into_iter().map(|d| d.join("claude")).find(|p| p.is_file())).clone()
++        FOUND.get_or_init(|| tool_dirs().into_iter().map(|d| d.join(if cfg!(windows) { "claude.exe" } else { "claude" })).find(|p| p.is_file())).clone()
+     }
+ }
+ 
+@@ -57,7 +58,7 @@ fn tool_dirs() -> Vec<std::path::PathBuf> {
+     use std::path::PathBuf;
+     let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
+     dirs.extend(["/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from));
+-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
++    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from) {
+         dirs.extend([".local/bin", ".claude/local", ".npm-global/bin"].map(|d| home.join(d)));
+     }
+     dirs
+@@ -456,7 +457,13 @@ fn run_claude_code(
+ 
+     // An app opened from the Dock has a short PATH; give Claude Code the usual tool folders.
+     let path = std::env::join_paths(claude.parent().map(std::path::Path::to_path_buf).into_iter().chain(tool_dirs())).unwrap_or_default();
+-    let mut child = Command::new(claude)
++    let mut command = Command::new(claude);
++    #[cfg(windows)]
++    {
++        use std::os::windows::process::CommandExt as _;
++        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no console flashes up
++    }
++    let mut child = command
+         .args(["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--no-session-persistence"])
+         .args(["--tools", "", "--strict-mcp-config", "--disable-slash-commands", "--system-prompt", SYSTEM])
+         .current_dir(std::env::temp_dir())

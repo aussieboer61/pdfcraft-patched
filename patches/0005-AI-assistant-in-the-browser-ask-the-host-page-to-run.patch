@@ -1,0 +1,239 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: aussieboer61 <60841910+aussieboer61@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 22:48:21 +1000
+Subject: [PATCH 5/6] AI assistant in the browser: ask the host page to run
+ Claude Code
+
+The web build had no backend ("desktop app only"). A host page that can run Claude Code
+(the PdfCraft Chrome extension, through its native helper on the computer) now defines
+window.pdfcraftClaude(prompt, system, onLine); the dialog sends the same prompt and system
+prompt as claude -p on the desktop and streams the stream-json lines it gets back.
+---
+ crates/ui-egui/src/dialogs/claude_ui.rs | 184 ++++++++++++++++++++----
+ 1 file changed, 155 insertions(+), 29 deletions(-)
+
+diff --git a/crates/ui-egui/src/dialogs/claude_ui.rs b/crates/ui-egui/src/dialogs/claude_ui.rs
+index a4f63fa0..e8564e64 100644
+--- a/crates/ui-egui/src/dialogs/claude_ui.rs
++++ b/crates/ui-egui/src/dialogs/claude_ui.rs
+@@ -30,12 +30,23 @@ enum Backend {
+     Api(String),
+     /// The `claude` command (Claude Code) and the Claude plan it is logged in to.
+     ClaudeCode(std::path::PathBuf),
++    /// In a browser: the page hosting PdfCraft runs Claude Code for it (`window.pdfcraftClaude`).
++    #[cfg(target_arch = "wasm32")]
++    Host,
+ }
+ 
+ /// Claude Code (the Claude plan it is logged in to) wins; an API key is only the fallback when
+ /// Claude Code is not installed, so a stray `ANTHROPIC_API_KEY` never switches to metered billing.
++/// In a browser only a host page that runs Claude Code counts; there is no API key there.
+ fn backend() -> Option<Backend> {
+-    claude_code().map(Backend::ClaudeCode).or_else(|| api_key().map(Backend::Api))
++    #[cfg(target_arch = "wasm32")]
++    {
++        web::bridge().map(|_| Backend::Host)
++    }
++    #[cfg(not(target_arch = "wasm32"))]
++    {
++        claude_code().map(Backend::ClaudeCode).or_else(|| api_key().map(Backend::Api))
++    }
+ }
+ 
+ /// The `claude` command: on `PATH`, else where its installers put it (an app opened from the Dock
+@@ -240,27 +251,33 @@ impl Draft {
+         let cancel = Arc::new(AtomicBool::new(false));
+         self.job = Some(Job { mode, reply: reply.clone(), cancel: cancel.clone() });
+         let document = self.document.clone();
+-        let ctx = ctx.clone();
+-        let work = move || {
+-            let result = run(source, document, &messages, &backend, &reply, &cancel, &ctx);
+-            if let Ok(mut r) = reply.lock() {
+-                if let Err(e) = result {
+-                    r.error = Some(e);
+-                }
+-                r.finished = true;
+-            }
+-            ctx.request_repaint();
+-        };
++        #[cfg(target_arch = "wasm32")]
++        {
++            let _ = (inline, backend);
++            web::start(source, document, messages, reply, cancel, ctx.clone());
++        }
+         #[cfg(not(target_arch = "wasm32"))]
+-        if !inline {
+-            if let Err(error) = std::thread::Builder::new().name("claude".into()).spawn(work) {
+-                self.job = None;
+-                self.error = Some(error.to_string());
++        {
++            let ctx = ctx.clone();
++            let work = move || {
++                let result = run(source, document, &messages, &backend, &reply, &cancel, &ctx);
++                if let Ok(mut r) = reply.lock() {
++                    if let Err(e) = result {
++                        r.error = Some(e);
++                    }
++                    r.finished = true;
++                }
++                ctx.request_repaint();
++            };
++            if !inline {
++                if let Err(error) = std::thread::Builder::new().name("claude".into()).spawn(work) {
++                    self.job = None;
++                    self.error = Some(error.to_string());
++                }
++                return;
+             }
+-            return;
++            work();
+         }
+-        let _ = inline;
+-        work();
+     }
+ }
+ 
+@@ -561,17 +578,122 @@ fn claude_code_error(message: &str) -> String {
+     }
+ }
+ 
++/// Claude in a browser, through the page that hosts PdfCraft.
++///
++/// A host that can run Claude Code (the PdfCraft Chrome extension, through its native helper)
++/// defines `window.pdfcraftClaude(prompt, system, onLine)`. It runs `claude -p` with the same
++/// flags as the desktop app, calls `onLine` with each line of its `stream-json` output, then once
++/// with `null` when it has finished; a failure arrives as one line
++/// `{"type":"result","is_error":true,"result":"<message>"}`. It returns a function that stops
++/// the request. Without that function on the page the dialog explains what is needed.
+ #[cfg(target_arch = "wasm32")]
+-fn run(
+-    _: ExportSource,
+-    _: Option<Arc<String>>,
+-    _: &[(&str, String)],
+-    _: &Backend,
+-    _: &Mutex<Reply>,
+-    _: &AtomicBool,
+-    _: &egui::Context,
+-) -> Result<(), String> {
+-    Err(tl!("Claude is available in the desktop app only.").into())
++mod web {
++    use std::cell::RefCell;
++    use std::rc::Rc;
++    use std::sync::{
++        Arc, Mutex,
++        atomic::{AtomicBool, Ordering},
++    };
++
++    use pdfcraft_engine::export::ExportSource;
++    use wasm_bindgen::{JsCast as _, JsValue, closure::Closure};
++
++    use super::{Reply, SYSTEM, apply_value, claude_code_error, cli_prompt, document_text};
++
++    /// The host page's `window.pdfcraftClaude`, when it has one.
++    pub(super) fn bridge() -> Option<js_sys::Function> {
++        let window = web_sys::window()?;
++        js_sys::Reflect::get(&window, &JsValue::from_str("pdfcraftClaude")).ok()?.dyn_into::<js_sys::Function>().ok()
++    }
++
++    fn finish(reply: &Mutex<Reply>, error: Option<String>, ctx: &egui::Context) {
++        if let Ok(mut r) = reply.lock() {
++            if r.finished {
++                return;
++            }
++            if error.is_some() {
++                r.error = error;
++            } else if r.text.is_empty() && r.error.is_none() {
++                r.error = Some(tl!("Claude Code stopped without an answer.").into());
++            }
++            r.finished = true;
++        }
++        ctx.request_repaint();
++    }
++
++    pub(super) fn start(
++        source: ExportSource,
++        document: Option<Arc<String>>,
++        messages: Vec<(&'static str, String)>,
++        reply: Arc<Mutex<Reply>>,
++        cancel: Arc<AtomicBool>,
++        ctx: egui::Context,
++    ) {
++        // After this frame, so "Reading the document…" shows while the text is extracted.
++        wasm_bindgen_futures::spawn_local(async move {
++            let document = match document {
++                Some(d) => d,
++                None => match document_text(source, &cancel) {
++                    Ok(text) => Arc::new(text),
++                    Err(e) => return finish(&reply, Some(e), &ctx),
++                },
++            };
++            if cancel.load(Ordering::Relaxed) {
++                return;
++            }
++            if let Ok(mut r) = reply.lock() {
++                r.document = Some(document.clone());
++                r.writing = true;
++            }
++            ctx.request_repaint();
++            let Some(bridge) = bridge() else {
++                return finish(&reply, Some(tl!("Claude is not available on this page.").into()), &ctx);
++            };
++            let prompt = cli_prompt(&document, &messages);
++            let stop: Rc<RefCell<Option<js_sys::Function>>> = Rc::new(RefCell::new(None));
++            let (on_reply, on_ctx, on_stop, on_cancel) = (reply.clone(), ctx.clone(), stop.clone(), cancel.clone());
++            let on_line = Closure::<dyn FnMut(JsValue)>::new(move |line: JsValue| {
++                let stop_now = || {
++                    if let Some(f) = on_stop.borrow_mut().take() {
++                        let _ = f.call0(&JsValue::NULL);
++                    }
++                };
++                if on_cancel.load(Ordering::Relaxed) {
++                    return stop_now();
++                }
++                let Some(line) = line.as_string() else {
++                    return finish(&on_reply, None, &on_ctx);
++                };
++                let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else { return };
++                match value["type"].as_str() {
++                    Some("stream_event") => {
++                        let outcome = match on_reply.lock() {
++                            Ok(mut r) => apply_value(&value["event"], &mut r),
++                            Err(_) => Ok(()),
++                        };
++                        if let Err(e) = outcome {
++                            stop_now();
++                            finish(&on_reply, Some(e), &on_ctx);
++                        } else {
++                            on_ctx.request_repaint();
++                        }
++                    }
++                    Some("result") if value["is_error"].as_bool() == Some(true) => {
++                        let message = value["result"].as_str().unwrap_or("Claude Code reported an error.");
++                        finish(&on_reply, Some(claude_code_error(message)), &on_ctx);
++                    }
++                    _ => {}
++                }
++            });
++            match bridge.call3(&JsValue::NULL, &JsValue::from_str(&prompt), &JsValue::from_str(SYSTEM), on_line.as_ref().unchecked_ref()) {
++                Ok(f) => *stop.borrow_mut() = f.dyn_into::<js_sys::Function>().ok(),
++                Err(e) => finish(&reply, Some(e.as_string().unwrap_or_else(|| format!("{e:?}"))), &ctx),
++            }
++            // The host calls it until the reply ends, long after this returns; one small closure
++            // per request.
++            on_line.forget();
++        });
++    }
+ }
+ 
+ fn key_path() -> Option<std::path::PathBuf> {
+@@ -756,6 +878,10 @@ pub(crate) fn body(ui: &mut egui::Ui, app: &mut PdfCraftApp, mode: ClaudeMode, n
+             Backend::ClaudeCode(_) => {
+                 ui.small(tl!("Sends the document's text to Claude through Claude Code. It counts toward your Claude plan's usage limits."));
+             }
++            #[cfg(target_arch = "wasm32")]
++            Backend::Host => {
++                ui.small(tl!("Sends the document's text to Claude through Claude Code. It counts toward your Claude plan's usage limits."));
++            }
+         }
+         if matches!(backend, Backend::Api(_)) && std::env::var_os("ANTHROPIC_API_KEY").is_none() && ui.small_button(tl!("Remove saved key")).clicked()
+         {

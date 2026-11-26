@@ -1,0 +1,23 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: aussieboer61 <60841910+aussieboer61@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 04:28:16 +1000
+Subject: [PATCH 4/6] AI assistant: section title says it uses Claude Code, not
+ an API key
+
+---
+ crates/engine/src/catalog.rs | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/crates/engine/src/catalog.rs b/crates/engine/src/catalog.rs
+index 965d8937..775cf9fa 100644
+--- a/crates/engine/src/catalog.rs
++++ b/crates/engine/src/catalog.rs
+@@ -536,7 +536,7 @@ pub static TOOL_GROUPS: &[ToolGroup] = &[
+         badge: Some("Optional"),
+         availability: Ready,
+         sections: &[ToolSection {
+-            title: "Claude (needs your Anthropic API key)",
++            title: "Claude (uses Claude Code and your Claude plan)",
+             items: &[
+                 item("Summarize", "sparkles", "ai.summary", Ready),
+                 item("Ask about this document", "message-circle-reply", "ai.ask", Ready),

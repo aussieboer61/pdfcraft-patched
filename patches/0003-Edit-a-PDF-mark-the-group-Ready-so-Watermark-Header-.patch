@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: aussieboer61 <60841910+aussieboer61@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 03:38:21 +1000
+Subject: [PATCH 3/6] Edit a PDF: mark the group Ready so Watermark, Header and
+ footer, Bates and Background show in the menu bar and All tools (every item
+ in it is already Ready)
+
+---
+ crates/engine/src/catalog.rs | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/crates/engine/src/catalog.rs b/crates/engine/src/catalog.rs
+index db50ffc1..965d8937 100644
+--- a/crates/engine/src/catalog.rs
++++ b/crates/engine/src/catalog.rs
+@@ -124,7 +124,7 @@ pub static TOOL_GROUPS: &[ToolGroup] = &[
+         icon: "file-pen-line",
+         hue: PINK,
+         badge: None,
+-        availability: Planned("M7"),
++        availability: Ready,
+         sections: &[
+             ToolSection {
+                 title: "Modify page",

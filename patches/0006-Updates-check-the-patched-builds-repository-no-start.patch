@@ -1,0 +1,57 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: aussieboer61 <60841910+aussieboer61@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 22:36:43 +1000
+Subject: [PATCH 6/6] Updates: check the patched builds' repository; no startup
+ check on macOS
+
+A patched build updating from the official repository would replace itself with an
+unpatched one. On macOS the updater accepts only the official Developer ID signature,
+so the startup check is off there.
+---
+ apps/pdfcraft/src/main.rs              | 4 +++-
+ crates/ui-egui/src/lib.rs              | 3 +++
+ crates/ui-egui/src/platform/updates.rs | 2 +-
+ 3 files changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/apps/pdfcraft/src/main.rs b/apps/pdfcraft/src/main.rs
+index 784cd68f..68c3cedd 100644
+--- a/apps/pdfcraft/src/main.rs
++++ b/apps/pdfcraft/src/main.rs
+@@ -484,7 +484,9 @@ fn app_creator<'a>(
+             }
+             app.motion.source = Some(motion::source());
+         }
+-        app.set_startup_update_check(true);
++        // On macOS the updater only installs bundles signed by the official Developer ID, which a
++        // patched build cannot carry, so it would offer updates it then refuses to install.
++        app.set_startup_update_check(!cfg!(target_os = "macos"));
+         app.printer_source = Some(pdfcraft_ui_egui::system_printers());
+         app.two_sided_source = Some(pdfcraft_ui_egui::system_two_sided());
+         app.os_key_store_ids = cfg!(any(target_os = "macos", target_os = "windows"));
+diff --git a/crates/ui-egui/src/lib.rs b/crates/ui-egui/src/lib.rs
+index 439435f9..c34cfc80 100644
+--- a/crates/ui-egui/src/lib.rs
++++ b/crates/ui-egui/src/lib.rs
+@@ -15,6 +15,9 @@
+ pub const UPDATE_APP: craft_update::app::App = craft_update::app::App {
+     icon_png: Some(include_bytes!("../../../assets/app-icon/hicolor/128x128/apps/ai.storyteller.pdfcraft.png")),
+     accent: Some([0xb7, 0x02, 0x28]),
++    // This build adds patches on top of the official release, so it updates from the repository
++    // that publishes the patched builds, not the official one (which would drop the patches).
++    repo: "aussieboer61/pdfcraft-patched",
+     ..craft_update::suite::PDFCRAFT
+ };
+ 
+diff --git a/crates/ui-egui/src/platform/updates.rs b/crates/ui-egui/src/platform/updates.rs
+index df58adb7..38313721 100644
+--- a/crates/ui-egui/src/platform/updates.rs
++++ b/crates/ui-egui/src/platform/updates.rs
+@@ -10,7 +10,7 @@ use craft_update::{CheckResultDialog, CheckResultResponse};
+ use crate::PdfCraftApp;
+ 
+ /// Where every PdfCraft release is listed.
+-pub const RELEASES_PAGE: &str = "https://github.com/storytold/pdfcraft/releases";
++pub const RELEASES_PAGE: &str = "https://github.com/aussieboer61/pdfcraft-patched/releases";
+ 
+ /// Stands in for the network in tests.
+ #[cfg(not(target_arch = "wasm32"))]
